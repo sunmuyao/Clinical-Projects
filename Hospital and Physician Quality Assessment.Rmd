@@ -1,0 +1,363 @@
+---
+title: 'Hospital and Physician Quality Assessment'
+author: "Sun, Muyao"
+date: "11/11/2017"
+output:
+  pdf_document: default
+  fig_caption: yes
+  tab_caption: yes
+  keep_tex: yes
+  html_document: default
+geometry: left=2cm,right=2cm,top=2cm,bottom=2cm
+fontsize: 12pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.align='center',fig.pos = 'h')
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+#If any packages are not in your computer, please using following code to install
+# install.packages("lme4", repos = "http://cran.us.r-project.org")
+# install.packages("brms", repos = "http://cran.us.r-project.org")
+# install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+# install.packages("dplyr", repos = "http://cran.us.r-project.org")
+# install.packages("knitr", repos = "http://cran.us.r-project.org")
+# install.packages("kableExtra", repos = "http://cran.us.r-project.org")
+# install.packages("rstanarm", repos = "http://cran.us.r-project.org")
+# install.packages("devtools", repos = "http://cran.us.r-project.org")
+
+suppressMessages(library(lme4))
+suppressMessages(library(brms))
+suppressMessages(library(ggplot2))
+suppressMessages(library(dplyr))
+suppressMessages(library(knitr))
+suppressMessages(library(rstanarm))
+suppressMessages(library(devtools))
+
+# library(lme4)
+# library(brms)
+# library(ggplot2)
+# library(dplyr)
+# library(knitr)
+# library(kableExtra)
+# library(gridExtra)
+# library(rstanarm)
+# devtools::install_github("guiastrennec/ggplus")
+# library(ggplus)
+```
+
+####Introduction
+
+Choosing a hospital is a complex decision reflecting personal needs and preference. However, a clear ranking of hospitals provide a starting point to learn their quality and compare hospitals locally. The Centers for Medicare and Medicaid Services plans to have a systematic way to evaluate hospitals' performance. Also, assessing the performance for physicians in hospitals can be helpful for both patients and health care providers. In order to rank hosiptals and physicians, I utilize the data on outcomes of cardiac surgical procedures in New York State from 2009-2011 and build a binomial generalized linear mixed model to measure their performance, mainly relied on the mortality rate within 30 days. 
+
+####Data Exploration
+
+The dataset on outcomes of cardiac surgical procedures includes 361 records and each record contains physician name, hospital name, regions in NY state, cardiac surgical procedure type (Valve or Valve/CABG involving valve replacement and CABG not involving valve replacement), number of cases taken by the physician, number of deaths, observed mortality rate per 100 cases, and expected mortality rate per 100 cases. The expected mortality rate takes account for the health status of patients undergoing each procedure, avoiding penalize physicians who have received many severe and complex cases. 
+
+No missing values exist in this data set. Physician name, hospital name, regions in NY state and procedure type are coded into categorical variables, and each contains 140, 40, 10 and 2 levels, respectively. Manhattan is the region occupying the largest proportion of records ($32\%$) with total 8 hospitals and 47 physicians. Cardiac surgical procedures are reported as Valve or Valve/CABG with valve replacement ($51\%$) and CABG without valve replacement ($49\%$). The rest four variables related to outcomes are treated as numeric values. Table 1 summarizes these four variables separately for each region. Manhattan still has the highest total number of cases and deaths, but Kings has the highest average observed mortality rate and Long Island has the highest average expected mortality rate. 
+
+
+```{r include=FALSE}
+file_path="/Users/sunmuyao/Documents/Fall2017/Categorical\ Data/cs2.csv"
+cms = read.csv(file_path,header = TRUE)
+```
+
+
+```{r echo=FALSE,tab.cap="Outcomes of cardiac surgical procedures",warning=FALSE,message=FALSE}
+tt0 = cms %>% group_by(Detailed.Region) %>% summarise(Total_Cases=sum(Number.of.Cases),                                          Total_Deaths=sum(Number.of.Deaths),Avg_Obs_MR=mean(Observed.Mortality.Rate),
+                                                      Avg_Exp_MR=mean(Expected.Mortality.Rate))
+colnames(tt0) = c("Region","Cases(total)","Deaths(total)","Obs MR(avg)","Exp MR(avg)")
+#kable(tt0) %>% add_footnote(c("MR represents mortality rate"), notation = "number")\
+kable(tt0,caption = "Outcomes of cardiac surgical procedures")
+```
+
+
+Among 361 records, 140 unique physicians and 40 unique hospitals are included, which indicate that one physician may have several records with different surgical procedure or in different hospital, equivalently, the data is correlated. Also, the values in number of cases and number of deaths cell varies dramatically, even for a same physician. A physician can take many cardiac surgeries in one hospital but rare cases in another one. Thus, a model can deal with correlated data and be able to borrow information within group is required in order to gain insight from this data set.
+
+```{r echo=FALSE}
+cms$Detailed.Region=relevel(cms$Detailed.Region, ref="Queens")
+#bm1 = brm(Number.of.Deaths | trials(Number.of.Cases) ~ Detailed.Region*Procedure+(1|Hospital.Name)
+         # +(1|Physician.Name),family = binomial,data=cms,prior=c(set_prior("normal(0,2)",class = "b")),
+         # warmup = 2000, iter = 4000, chains = 4, control = list(adapt_delta = 0.99))
+#save(bm1, file = "mymodel_bm1.rda")
+load(file = "mymodel_bm1.rda")
+```
+
+####Method
+
+The outcome of interest is whether or not a patient taken by a physician in a hospital after a cardic procedure die. A specific interest is to evaluate each physician's performance and each hospital's performance based on the mortality rate. In this analysis, I use Bayesian binomial generalized linear mixed model for the outcome $Y_{ijk}$ of death for patient taken by physician i in hospital j with cardiac surgical procedure k. Mixed effect model is a robust analytical approach to model the sources of correlation in hierarchical data and allow me to determine which additional random components should be included in my model. The Bayesian version can be modeled with prior belief and return a posterior distribution of fixed and random effects instead of just point estimates, which allows more analysis.
+
+Three explanatory variables (region, surgical procedure and interaction between these two) and two random intercepts (hospital and physician) are included in the model. Random effects on different levels of the model (physician and hospital) are assumed independent. The model is defined as following:
+$$logit(Pr(Y_{ijk}=1)) = \beta_0 + \beta_1Region_j + \beta_2Procedure_{ijk} + \beta_3Region_{j} \times Procedure_{ijk} + b_{0_i} + b_{0_j}$$
+
+where $b_{0_i}$ and $b_{0_j}$ follow $N(0,\sigma^2)$. Before fitting the model, the priors for $(\beta_1,\beta_2,\beta_3)$ are set to $N(0,2^2)$ with default uniform prior on $\beta_0$ and half-t prior with degree of freedom 3 and scale parameter 10 on $\sigma$. 
+
+`Rhat` in model summary is considered as an indicator to posterior convergence information. With the default setting of Baysian mixed model in R (package `brms`), the `Rhat` for several parameters is larger than 1, which requires a strong prior or more iterations to converge. Thus the model (bm1) in this analysis is fitted using 4 chains, each with 4000 iterations (the first 2000 are warmup), leading to a total of 8000 posterior samples for each parameter. 
+
+####Result
+
+Two random effects are included in this model. The standard deviations of the random effects reflect how much variability there are between individuals across all records. The standard deviation for random intercept physician is 0.11 (0.006,0.268) and random intercept hospital is 0.37 (0.287,0.467), telling that $\frac{0.11^2}{0.11^2+0.37^2+\sigma_{\mu}^2}\times 100\%$ of total variance is explained by physician difference and $\frac{0.37^2}{0.11^2+0.37^2+\sigma_{\mu}^2}\times 100\%$ of total variance is explained by hospital difference where $\sigma_{\mu}$ is the standard deviation of between groups. 
+
+Three fixed effects are included in this model. Since explanatory variable region has 10 levels (using Queens as referent), total 22 parameter estimates are given by the model. For example, the estimate on procedure Valve/CABG is 0.38. For a specific physician in a specific hospital with use of Valve/CABG in Queens, having higher odd of being dead (exp(0.38)) comparing to (s)he in same hospital with use of CABG. The detailed infomation about odds ratio (posterior median and $95\%$ credible intervals) comparing the odds of death in each region to that in Queens, separately for each procedure type is shown in Fig 1. 
+
+
+
+```{r include=FALSE}
+bm1_group_eff = ranef(bm1,summary = TRUE, robust = FALSE, probs = c(0.025, 0.975), old = FALSE)
+
+bm1_pos_mat = posterior_samples(bm1)
+hospital_sd_estimate = mean(bm1_pos_mat$sd_Hospital.Name__Intercept)
+hospital_sd_estimate
+hospital_sd_int = quantile(bm1_pos_mat$sd_Hospital.Name__Intercept,probs = c(0.025,0.975),names = FALSE)
+hospital_sd_int 
+physician_sd_estimate = mean(bm1_pos_mat$sd_Physician.Name__Intercept)
+physician_sd_estimate
+physician_sd_int = quantile(bm1_pos_mat$sd_Physician.Name__Intercept, probs = c(0.025,0.975),names = FALSE)
+physician_sd_int 
+```
+
+
+```{r include=FALSE}
+pt_estimate_cabg = c()
+CI_l_cabg = c()
+CI_u_cabg = c()
+pt_estimate_valve = c()
+CI_l_valve = c()
+CI_u_valve = c()
+for (i in 2:11){
+  j=i+11
+  pt_estimate = median(bm1_pos_mat[,i])
+  pt_estimate_cabg = c(pt_estimate_cabg,pt_estimate)
+  CI_l = quantile(bm1_pos_mat[,i],probs=0.025,names = FALSE)
+  CI_l_cabg = c(CI_l_cabg,CI_l)
+  CI_u = quantile(bm1_pos_mat[,i],probs=0.975,names = FALSE)
+  CI_u_cabg = c(CI_u_cabg,CI_u)
+  pt_estimate2 = median(bm1_pos_mat[,i]+bm1_pos_mat[,j])
+  pt_estimate_valve = c(pt_estimate_valve,pt_estimate2)
+  CI_l2 = quantile(bm1_pos_mat[,i]+bm1_pos_mat[,j],probs=0.025,names = FALSE)
+  CI_l_valve = c(CI_l_valve,CI_l2)
+  CI_u2 = quantile(bm1_pos_mat[,i]+bm1_pos_mat[,j],probs=0.975,names = FALSE)
+  CI_u_valve = c(CI_u_valve,CI_u2)
+}
+Region = rep(c("Bronx","CapitalDistrict","CentralNY","Kings","Manhattan","NYMetroMLongIsland","NYMetroMNewRochelle","StatenIsland","WesternNYMBuffalo","WesternNYMRochester"),2)
+tt=as.data.frame(Region)
+temp1 = data.frame(pt_estimate_cabg,CI_l_cabg,CI_u_cabg)
+colnames(temp1) = c("Coeff","CI_l","CI_u")
+temp2 = data.frame(pt_estimate_valve,CI_l_valve,CI_u_valve)
+colnames(temp2) = c("Coeff","CI_l","CI_u")
+temp = rbind(temp1,temp2)
+tt = cbind(tt,temp)
+tt['OR'] = exp(tt['Coeff'])
+tt['OR_l'] = exp(tt['CI_l'])
+tt['OR_u'] = exp(tt['CI_u'])
+label = c(rep("CABG",10),rep("Valve_or_CABG",10))
+tt['label'] = label
+```
+
+```{r echo=FALSE,fig.cap="Odds ratio comparing the odds of death in each region",fig.width=6, fig.height=4}
+ggplot(tt, aes(x = Region, y = OR)) +
+geom_point(size = 2) +
+geom_errorbar(aes(ymax = OR_u, ymin = OR_l),col=grey(0.8)) +
+  geom_hline(aes(yintercept = 1), lty=2)+
+theme(axis.text.x = element_text(angle = 45, hjust = 1,size=8),
+      panel.background = element_rect(fill = "white", colour = "grey50"))+
+  facet_grid(.~label)
+
+```
+
+According to the above plot, Rochester has the highest odds ratio of death with use of CABG relative to Queens; but with the use of Valve or CABG, Bronx has the highest odds ratio. Since each physician and hospital have their own favor on procedures, a same region can have different odds ratio of death comparing to Queens with different use of procedures. Bronx is one of wealthiest counties in NY. People living in this county are more likely to attend hospitals in this area and they may have more tendency or be more financial capable to receive procedure involving valve replacement (1898 Valve cases and 1124 CABG cases). This may one reason to explain why Bronx has the highest odds ratio of death with use of Valve but a relative low odds ratio with use of CABG. I still need to go through the region and explore hospitals and physicians to have a better idea of their performance.
+
+Comparing the model-predicted mortality rate to already given expected mortality rate can give me an understanding of how the physician in a hospital performs. If the model-predicted mortality rate is higher than the expected mortality rate (or the ratio of the model-predicted mortality rate to the expected mortality rate is greater than 1), the physician performs worse than the expected given the illness of his or her patients. All the ratio of unique physician and hospital combination in each region is shown in Fig 3 (in last page), separately for two different procedures. 
+
+According to the posterior probability that the ratio of model-predicted to the expected is greater than 1, top 5\% physician and hospital combinations and bottom 5\% combinations are listed in below tables.
+
+
+
+
+```{r include=FALSE}
+bm1_pos_pred = posterior_linpred(bm1,newdata = NULL, re_formula = NULL)
+bm1_pos_prob = (exp(bm1_pos_pred)/(1+exp(bm1_pos_pred)))*100
+bm1_pos_ratio = matrix(NA,nrow = 8000,ncol = ncol(bm1_pos_prob))
+for (i in 1:ncol(bm1_pos_prob)){
+  bm1_pos_ratio[,i] = bm1_pos_prob[,i]/cms$Expected.Mortality.Rate[i]
+}
+
+physician_names = gsub(" ", "\\.", cms$Physician.Name) 
+hospital_names = gsub(" ", "\\.", cms$Hospital.Name) 
+physician_and_hospital_names = paste("Physician",physician_names, "in Hospital", hospital_names)
+names = paste(physician_names, "(", hospital_names,")")
+tt1 = as.data.frame(physician_and_hospital_names)
+tt1$names = names
+tt1$procedure = cms$Procedure
+tt1$region = cms$Detailed.Region
+tt1$hospital = cms$Hospital.Name
+tt1$physician = cms$Physician.Name
+
+for (i in 1:nrow(cms)){
+  tt1$posterior_median[i] = round(median(bm1_pos_ratio[,i]),4)
+  tt1$CI_l[i] = quantile(bm1_pos_ratio[,i],probs=0.025,names = FALSE)
+  tt1$CI_u[i] = quantile(bm1_pos_ratio[,i],probs=0.975,names = FALSE)
+  temp3 = round(quantile(bm1_pos_ratio[,i],probs=0.025,names = FALSE),2)
+  temp4 = round(quantile(bm1_pos_ratio[,i],probs=0.975,names = FALSE),2)
+  tt1$posterior_conf[i] = paste0("(",temp3,",",temp4,")")
+  tt1$prob_excess[i] = round(mean(bm1_pos_ratio[,i]>1),4)
+}
+
+```
+
+
+
+```{r echo=FALSE, tab.cap="Bottom 5% posterior probability that the ratio is greater than 1"}
+tt2 = tt1[,-c(1,3,4,5,6,8,9)]
+tt2 = tt2[order(tt1$prob_excess),]
+tt1_tail = tail(tt2,round(nrow(tt1)*0.05,0))
+kable(tt1_tail,align=c(rep('c', 5)), row.names = FALSE, caption = "Bottom 5% the posterior probability that the ratio is greater than 1")
+```
+
+Some physicians' model-predicted poor performance is consistent among all the hospitials (s)he is working. For example, Dr. Tortolani is working for both NY Methodist Hospital and NYP- Weill Cornell, and had posterior ratio of the model-predicted mortality rate to the expected mortality rate larger than 1 in both hospitals with probability near 1, which indicates Dr. Tortolani has a worse performance than expected. Since Dr. Tortolani only takes 4 cases of CABG procedure and 5 cases of Valve in NYP- Weill Cornell hospital, and has one case died for each procedure, I am wondering if his poor performance is related to the quality of NYP- Weill Cornell hospital. I checked the random effects of Dr. Tortolani and both hospitals (s)he works for 2009-2011. The random effect for Dr. Tortolani is positive (0.3) but the random effects for both hospitals are negative. And also the random effect for Dr. Ciaburri who is also working for NY Methodist Hospital is negative. Although the effect of hospitals tend to draw down the odds of death, Dr. Tortolani's performance tends to lead to higher of mortality rate. No matter based on the random effect of Dr. Tortolani and ratio compared to expected mortality rate, Dr. Tortolani's performance cannot be evaluated as good. 
+
+Some physicians' unsatisfied model-predicted performance may not reflect their real quality. Dr. Chen works for NYP-Columbia Presbyterian Hospital and NYP- Weill Cornell Hospital, and receives total 7 cases of Valve replacement without any death case. But his posterior ratio in NYP-Columbia Presbyterian Hospital is extremely high (9.8) which may not due to his performance is not good but records on this particular physician are few. Not enough data cannot accurately predict a physician's performance. The high predicted odds of death may be caused by high random effect of the hospital. The random effect for NYP-Columbia Presbyterian Hospital is positive (0.6) and random effect for Dr. Chen is negative but close to 0, which demonstrates the high model predicted mortality rate does not correctly and completely reflect the physician's performance. Dr. Argenziano and Dr. Naka are two physicians I consider that need to pay more attention to by the governors of NYP-Columbia Presbyterian Hospital. They both have posterior ratio larger than 1 with a high probability and positive random effect towards higher odds of death. Their most surgical procedures are done in this hospital though Dr. Naka also works in NYP- Weill Cornell receiving only 2 cases. Thus the NYP-Columbia Presbyterian Hospital cannot gather more information about their performance out of their hospital.
+
+
+```{r echo=FALSE, tab.cap="Top 5% posterior probability that the ratio is greater than 1"}
+tt1_head = head(tt2,round(nrow(tt1)*0.05,0))
+kable(tt1_head,align=c(rep('c', 5)), row.names = FALSE, caption = "Top 5% the posterior probability that the ratio is greater than 1")
+```
+
+
+```{r include=FALSE}
+physician_nyp_presby = as.character(unique(cms[cms$Hospital.Name=="NYP- Columbia Presby.",'Physician.Name']))
+coef = c()
+CI_l = c()
+CI_u = c()
+for (i in 1:length(physician_nyp_presby)){
+  coef = c(coef,bm1_group_eff$Physician.Name[,,1][names(bm1_group_eff$Physician.Name[,,1][,1])==physician_nyp_presby[i],1])
+  CI_l = c(CI_l,bm1_group_eff$Physician.Name[,,1][names(bm1_group_eff$Physician.Name[,,1][,3])==physician_nyp_presby[i],3])
+  CI_u = c(CI_u,bm1_group_eff$Physician.Name[,,1][names(bm1_group_eff$Physician.Name[,,1][,4])==physician_nyp_presby[i],4])
+}
+nyp_presby = data.frame(physician_nyp_presby,coef,CI_l,CI_u)
+ggplot(nyp_presby, aes(x = physician_nyp_presby, y = coef)) +
+geom_point(size = 2) +
+geom_errorbar(aes(ymax = CI_u, ymin = CI_l),col=grey(0.8)) +
+  geom_hline(aes(yintercept = 0), lty=2)+
+theme(axis.text.x = element_text(angle = 30, hjust = 1,size=8),
+      panel.background = element_rect(fill = "white", colour = "grey50"))
+
+```
+
+The above table only includes the top 5\% (total 18) physician and hospital combinations. If I extend this table, I can see that Dr. Ciaburri ranks 41th by the posterior probability of ratio greater than 1. Dr. Ciaburri is a physician who is working for three hospitals and his most of work is done in NY Methodist Hospital. (S)he does not have any death cases among all three hospitals in 2009-2011. According to the fitted model, (s)he has a negative random effect towards odds of death and a posterior median ratio 0.53 (0.24,1.07) that indicates that (s)he performs better than his/her expected performance at most of time. I consider that Dr. Ciaburri is a good physician with satisfying performance beyond expectation, but I am not sure if I could conclude that (s)he has the best mortality record in the state. 
+
+According to the top 5\% table, I have five candidates to be the best physician in the state: Dr. Spielvogel, Dr. Kalimi, Dr. Scheinerman, Dr. Sarabu and Dr. Malekan. They all have relative low posterior median of the ratio and low probability that ratio exceeds 1. Most of them only work for one hospital but have enough number of cases to analyze. Their expected mortality rate is moderately high indicating that they have reputation among patients and health care providers and be able to take patients in severe condition. Since their model-predicted mortality rate may be affected by the random effect of the hospital they are working for, I take a look for random effects on themselves. All physicians have a negative random effect except Dr. Malekan. Among my five candidates, Dr. Kalimi has the smallest value of random effect, which makes him/her able to get lower odds of death if all the five physician work for a same hospital. Also, Dr. Kalimi is the only one physician who is working for two hospitals and have good performance in both hospitals. Moreover, the average expected mortality rate for Dr. Kalimi is the highest among my five candidates, which shows (s)he always take patients with severe and complex cardiac diseases. I consider Dr. Kalimi is the best physician in NY state.
+
+Having discussed the performance of individual physicians, I am interested in the ranking of hospital since people usually go to the best hospital in their area. The criterion I used to compare physicians' performance is based on their posterior ratio of model-predicted mortality rate to the expected mortality rate. However, the expected mortality rate given in data set is on physician level not on the hospital level. I cannot use it directly for eveluating the performance of hospitals thus I calculated the weighted posterior median ratio for each hospital. I use the ratio of cases taken by a specific physician to total cases taken in the hospital as weight to evaluate the importance of a specific physician in a given hospital. The individual physician's posterior median ratio weighted by his/her important is the posterior median ratio for the hospital. The formula is as following:
+\[Expected\ MR_{Hospital_j} = \sum_{i} \frac{cases_i}{\sum_{i}cases_i}\frac{model\ predicted\ MR_{i}}{Expected\ MR_{i}}\]
+
+Fig 2 shows the ranking of hospitals based on weighted posterior median ratio of model-predicted mortality rate to expected mortality rate. As we can seen, the top five hospitals are LIJ Medical Center, Westchester Medical Center, NY Hospital Queens, Good Sam Suffern and Vassar Bros. Medical Center; among these five hospitals, three hospitals are in region NY Metro - New Rochelle and the rest two are in region Queens. I've also look these hospitals' random effect but they are not all negative. However, I do not think evaluating a hospital based on their random effects is accurate and complete. Firstly, it is impossible to have a same physician to work in all hospitals. Moreover, a physician's random effect can be strong to offset the random effect of the hospital (s)he is working for thus a relative higher random effect of hospitals does not mean the odds of death in this hospital will be high. 
+
+The five low ranking hosiptals are Strong Memorial Hospital, Mount Sinai Hospital, St. Lukes at St. Lukes, Beth Israel Medical Center and Arnot Ogden Medical Center; among these five hospitals, three hospitals are in region Manhattan and the rest two are in Western NY Rochester. St. Lukes at St. Lukes and Arnot Ogden Medical Center are hospitals with small size and each only has two physicians working on cardiac surgeries. They may be penalized by one physician whose performance is really unsatisfying. Also, I notice Mount Sinai Hospital has the largest positive value random effect though the rest four have both positive and negative random effects. The physicians working in this hospital may have higher odds of death due to the high random effect of this hospital.
+
+
+```{r include=FALSE, fig.cap="Random effects for each hospital"}
+bm1_group_eff = ranef(bm1,summary = TRUE, robust = FALSE, probs = c(0.025, 0.975), old = FALSE)
+Random_effect = bm1_group_eff$Hospital.Name[,,1][,1]
+CI_l = bm1_group_eff$Hospital.Name[,,1][,3]
+CI_u = bm1_group_eff$Hospital.Name[,,1][,4]
+hospital = names(Random_effect)
+bm1_hosp = data.frame(hospital,Random_effect,CI_l,CI_u)
+
+
+ggplot(data=bm1_hosp,aes(x=reorder(hospital,-Random_effect),y=Random_effect,ymin=CI_l,ymax=CI_u))+
+  geom_pointrange()+
+  geom_hline(yintercept = 0, lty=2)+
+  coord_flip()+
+  xlab("Hospital")+
+  ylab("Random Effect")+
+  theme_bw()
+  
+
+```
+
+```{r echo=FALSE, fig.cap="Ranking for hospitals based on weighted posterior median ratio"}
+tt3 = cms %>% group_by(Hospital.Name) %>% count(Physician.Name)
+tt4 = cms %>% group_by(Hospital.Name) %>% summarise(total=sum(Number.of.Cases))
+weights_hosp = c()
+weights_hosp_l = c()
+weights_hosp_u = c()
+for (i in 1:length(unique(tt3$Hospital.Name))){
+  name=unique(tt3$Hospital.Name)[i]
+  temp = tt3[tt3$Hospital.Name==name,]
+  temp1 = tt4[tt4$Hospital.Name==name,]
+  weights = c()
+  weights_l = c()
+  weights_u = c()
+  for (j in 1:length(unique(temp$Physician.Name)) ){
+    temp2 = cms[(cms$Hospital.Name==unique(tt3$Hospital.Name)[i])&(cms$Physician.Name==unique(temp$Physician.Name)[j]),]
+    w = temp2$Number.of.Cases/temp1$total
+    temp3 = tt1[(tt1$hospital==unique(tt3$Hospital.Name)[i])&(tt1$physician==unique(temp$Physician.Name)[j]),]
+    r = temp3$posterior_median
+    r_l = temp3$CI_l
+    r_u = temp3$CI_u
+    weight=w*r
+    weights = c(weights,weight)
+    weight_l=w*r_l
+    weights_l = c(weights_l,weight_l)
+    weight_u=w*r_u
+    weights_u = c(weights_u,weight_u)
+  }
+  weights_h = sum(weights)
+  weights_hosp = c(weights_hosp,weights_h)
+  weights_h_l = sum(weights_l)
+  weights_hosp_l = c(weights_hosp_l,weights_h_l)
+  weights_h_u = sum(weights_u)
+  weights_hosp_u = c(weights_hosp_u,weights_h_u)
+}
+
+hosp = data.frame(unique(tt3$Hospital.Name))
+hosp$median = weights_hosp
+hosp$CI_l = weights_hosp_l
+hosp$CI_u = weights_hosp_u
+colnames(hosp) = c("Hospital","Posterior_Median", "CI_l","CI_u")
+
+ggplot(data=hosp,aes(x=reorder(Hospital,-Posterior_Median),y=Posterior_Median,ymin=CI_l,ymax=CI_u))+
+  geom_pointrange()+
+  geom_hline(yintercept = 1, lty=2)+
+  coord_flip()+
+  xlab("Hospital")+
+  theme_bw()
+
+
+
+```
+
+####Conclusion
+
+In this analysis, I evaluate the performance of hospitals in NY state using data on outcomes of cardiac surgical procedures from 2009 to 2011 and also assess the performance of physicians in hospitals. The top five achieving hospitals are  LIJ Medical Center, Westchester Medical Center, NY Hospital Queens, Good Sam Suffern and Vassar Bros. Medical Center; the bottom five achieving hospitals are Strong Memorial Hospital, Mount Sinai Hospital, St. Lukes at St. Lukes, Beth Israel Medical Center and Arnot Ogden Medical Center. The performace of hospital is evaluated based on the weighted posterior ratio of model-predicted mortality rate to expected mortality rate. Since this posterior median ratio is calculated from the information of individual physicians, the high ranking hosiptals and high ranking physicians are highly correlated. If the hospital has one top ranking physician, the hospital is more likely to have a good ranking. The weighting system needs to be improved to address the problem of this highly correlated ranking in order to get more precise evaluating method on hospitals. 
+
+Some physicians may have taken many cases in one hospital but few cases in another hospital. Mixed effect model has an advantage to borrow information from the records of such physician in one hospital to the other and estimates the overall random effect for such physician. If I only use the ratio of observed mortality rate to expected mortality rate, I will lose information that the physician is a same person who only works in multiple hospitals and have not precise estimate on the performance of physician. 
+
+####Reference
+
+1. Burkner, Paul-Christian. "brms: An R Package for Bayesian Multilevel Models using Stan."
+
+2. Gelman A, Rubin DB (1992). "Inference from Iterative Simulation Using Multiple Sequences."
+Statistical Science, pp. 457–472.
+
+3. Duke Stat. "Bayesian Random Effect Models."
+
+4. Wiki. "New York counties ranked by per capita income."
+
+
+```{r echo=FALSE,fig.cap="Ratio of the model-predicted mortality rate to the expected",fig.width=20, fig.height=30}
+ggplot(tt1, aes(x = names, y = posterior_median, color=procedure)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = CI_u, ymin = CI_l,col=procedure),width=.1) +
+  theme(axis.text.y = element_text(size=6),
+      panel.background = element_rect(fill = "white", colour = "grey50"),
+      legend.position="none")+
+    coord_flip()+
+  facet_wrap(~region,ncol=2,scales = "free")
+
+```
+
+

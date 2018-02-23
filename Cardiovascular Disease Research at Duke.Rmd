@@ -1,0 +1,335 @@
+---
+title: "Cardiovascular Disease Research at Duke"
+author: "Sun, Muyao"
+date: "10/11/2017"
+output:
+  pdf_document: default
+  fig_caption: yes
+  tab_caption: yes
+  keep_tex: yes
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.align='center',fig.pos = 'h')
+```
+
+####Introduction
+
+Myocardial infarction (MI), commonly known as heart attack, is the irreversible death of heart muscle resulting from an imbalance of oxygen supply and demand. In order to improve diagnosis, I attempt to identify risk factors and develop predictive models using patients' characteristics and events. By using de-identified data from the Duke Databank for Cardiovascular Diseases (DDCD) on patients undergoing a cardiac catheterization procedure for suspected disease from 1985-2013, I built up a generalized additive model (GAM) to examine the outcome of myocardial infarction.  
+
+####Data Exploration
+
+The dataset from DDCD include 32670 records and each record contains patients' demographics (age and race), medical history (smoking, severity of congestive heart failure, angina, cerebrovascular disease, congestive heart failure, chronic obstructive pulmonary disease, diabetes, hypertension, hyperlipidemia and MI) and laboratory tests (left ventricular ejection fraction and number of significantly diseased vessels). 
+
+In the original dataset, all the data are stored as numeric value but it does not really make sense. Firstly, I code all the indicator variables in medical history into factors with 0 represents no history and 1 represents having such history. Then I consider that race, severity of congestive heart failure and number of significantly diseased vessels should be coded as multilevel factors since the differences between each group cannot be accuratly explained by their linear values. Only two variables, age and left ventricular ejection fraction are remained as numeric values. Also, I am concerned that using linear term in age cannot represent the difference in each age group thus I created a new variable `med_age` representing age using the median value of each age group. 
+
+This dataset includes 10304 records with missing values. The variable with the highest number (n=9569, approximately 30% of the whole dataset) of missing value is left ventricular ejection fraction, which indicates that many records during the catheterization are not recorded or losted. I removed all the records including missing values since each data imputation method I tried changes the original distribution of variable `left ventricular ejection fraction`. The detailed data summary is shown in below table.
+
+
+
+```{r include=FALSE}
+#Required Libraries
+library(psych)
+library(ggplot2)
+library(effects)
+library(pROC)
+library(Amelia)
+library(Hmisc)
+library(mgcv)
+library(tableone)
+library(knitr) 
+library(caret)
+```
+
+
+```{r include=FALSE}
+#Read Data
+load("/Users/sunmuyao/Documents/Fall2017/STA841/cs1.RData")
+```
+
+
+```{r include=FALSE}
+str(cath2)
+describe(cath2)
+
+#Factor variables
+cols <- c("cath1.AGE_G", "cath1.RACE_G","cath1.HXSMOKE","cath1.CHFSEV","cath1.HXANGINA","cath1.HXCEREB","cath1.HXCHF","cath1.HXCOPD","cath1.HXDIAB","cath1.HXHTN","cath1.HXHYL","cath1.HXMI","cath1.NUMDZV","cath1.MI")
+cath2[,cols] <- data.frame(apply(cath2[cols], 2, as.factor))
+
+
+#Age
+cath2$cath1.AGE_G <- factor(cath2$cath1.AGE_G, levels = seq(1,13,1))
+colset <- c("#B3E2CD", "#FDCDAC")
+plot(cath1.MI~cath1.AGE_G,data=cath2,col=colset)
+cath2$cath1.AGE_G <- as.numeric(cath2$cath1.AGE_G)
+
+linear_age = seq(1,13,1)
+median_age = c(21,seq(27,77,5),85)
+age = data.frame(linear_age,median_age)
+
+for (i in seq_along(age$linear_age)){
+  cath2$med_age[cath2$cath1.AGE_G==age$linear_age[i]] = age$median_age[i]
+}
+
+
+#Factor variables visualization
+# par(mfrow=c(3,4),oma = c(0, 0, 0, 0))
+# plot(cath1.MI~cath1.RACE_G,data=cath2,col=colset)
+# plot(cath1.MI~cath1.HXSMOKE,data=cath2,col=colset)
+# plot(cath1.MI~cath1.CHFSEV,data=cath2,col=colset)
+# plot(cath1.MI~cath1.HXANGINA,data=cath2,col=colset)
+# plot(cath1.MI~cath1.HXCEREB,data=cath2,col=colset)
+# plot(cath1.MI~cath1.HXCHF,data=cath2,col=colset)
+# plot(cath1.MI~cath1.HXCOPD,data=cath2,col=colset)
+# plot(cath1.MI~cath1.HXDIAB,data=cath2,col=colset)
+# plot(cath1.MI~cath1.HXHTN,data=cath2,col=colset)
+# plot(cath1.MI~cath1.HXHYL,data=cath2,col=colset)
+# plot(cath1.MI~cath1.HXMI,data=cath2,col=colset)
+# plot(cath1.MI~cath1.NUMDZV,data=cath2,col=colset)
+
+
+#missmap(cath2)
+# sum(is.na(cath2$cath1.LVEF_R))
+# cath2$imputed_lvefr <- with(cath2, impute(cath1.LVEF_R, median))
+# hist(cath2$cath1.LVEF_R)
+# hist(cath2$imputed_lvefr)
+# cath2 <- subset(cath2, select=-c(cath1.LVEF_R))
+#cath2_mice <- mice(cath2,m=5,maxit=50,meth='pmm',seed=500)
+
+cath2 <- cath2[complete.cases(cath2), ]
+
+table1 <- CreateTableOne(vars =  c("cath1.AGE_G","cath1.RACE_G","cath1.HXSMOKE","cath1.CHFSEV","cath1.HXANGINA","cath1.HXCEREB","cath1.HXCHF","cath1.HXCOPD","cath1.HXDIAB","cath1.HXHTN","cath1.HXHYL","cath1.HXMI","cath1.LVEF_R","cath1.NUMDZV"), data = cath2, factorVars = c("cath1.RACE_G","cath1.HXSMOKE","cath1.CHFSEV","cath1.HXANGINA","cath1.HXCEREB","cath1.HXCHF","cath1.HXCOPD","cath1.HXDIAB","cath1.HXHTN","cath1.HXHYL","cath1.HXMI","cath1.NUMDZV","cath1.MI"),strata = c("cath1.MI"))
+```
+
+```{r echo=FALSE,tab.cap="Baseline Characteristics of DDCD Patients"}
+tt1 <- print(table1, exact = "stage", quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+kable(tt1)
+```
+
+####Model Selection
+
+By reviewing previous studies on learning myocardial infarction, I consider that all 14 variables may be potential predictors to the disease. I start with fitting two main effect models, one with using the median age I created before and the other with the linear term age given in the dataset. According to the ANOVA test on these main effect models, there is no significant difference in using median value in each age group and using linear term for each age group. In order to avoid changing the dataset, I will keep using the linear term `cath1.AGE_G`. Then this main effect model becomes my baseline model and I will continuely build on this model.  
+
+Since only two numeric variables in my baseline model, I firstly consider if they need to be transformed as polynimals or adding smoothness. I employ generalized additive model with adding smooth term on age first and then left ventricular ejection fraction. Adding smoothness on both variables makes the deviance of model decrease. The comparision plots between adding smoothness and not adding smoothness are shown below.
+
+```{r include=FALSE}
+cal_auc = function(model){
+  prob=predict(model,type=c("response"))
+  roccurve = roc(cath2$cath1.MI~prob,data=cath2)
+  #return(coords(roccurve,"best",ret=c("threshold","specificty","1-npv")))
+  return(auc(roccurve))
+}
+```
+
+```{r include=FALSE}
+#m1 = glm(formula = cath1.MI~med_age+cath1.RACE_G+cath1.HXSMOKE+cath1.CHFSEV+cath1.HXANGINA+cath1.HXCEREB+cath1.HXCHF+cath1.HXCOPD+cath1.HXDIAB+cath1.HXHTN+cath1.HXHYL+cath1.HXMI+cath1.LVEF_R+cath1.NUMDZV,family = binomial(link = "logit"),data = cath2)
+# cal_auc(m1)
+# summary(m1)
+# 
+m2 = glm(formula = cath1.MI~cath1.AGE_G+cath1.RACE_G+cath1.HXSMOKE+cath1.CHFSEV+cath1.HXANGINA+cath1.HXCEREB+cath1.HXCHF+cath1.HXCOPD+cath1.HXDIAB+cath1.HXHTN+cath1.HXHYL+cath1.HXMI+cath1.LVEF_R+cath1.NUMDZV,family = binomial(link = "logit"),data = cath2)
+# cal_auc(m2)
+# summary(m2)
+# anova(m1,m2,test = "Chisq")
+
+# 
+#m3 = gam(formula = cath1.MI~s(cath1.AGE_G)+cath1.RACE_G+cath1.HXSMOKE+cath1.CHFSEV+cath1.HXANGINA+cath1.HXCEREB+cath1.HXCHF+cath1.HXCOPD+cath1.HXDIAB+cath1.HXHTN+cath1.HXHYL+cath1.HXMI+cath1.LVEF_R+cath1.NUMDZV,family = binomial(link = "logit"),data = cath2)
+# summary(m3)
+# cal_auc(m3)
+# anova(m2,m3,test = "Chisq")
+# 
+m4 = gam(formula = cath1.MI~s(cath1.AGE_G)+cath1.RACE_G+cath1.HXSMOKE+cath1.CHFSEV+cath1.HXANGINA+cath1.HXCEREB+cath1.HXCHF+cath1.HXCOPD+cath1.HXDIAB+cath1.HXHTN+cath1.HXHYL+cath1.HXMI+s(cath1.LVEF_R)+cath1.NUMDZV,family = binomial(link = "logit"),data = cath2)
+# summary(m4)
+# cal_auc(m4)
+# anova(m3,m4,test = "Chisq")
+# 
+m5 = gam(formula = cath1.MI~s(cath1.AGE_G)+cath1.RACE_G+cath1.HXSMOKE+cath1.CHFSEV+cath1.HXANGINA+cath1.HXCEREB+cath1.HXCHF+cath1.HXCOPD+cath1.HXDIAB+cath1.HXHTN+cath1.HXHYL+cath1.HXMI+s(cath1.LVEF_R)+cath1.NUMDZV+cath1.HXMI:cath1.HXANGINA,family = binomial(link = "logit"),data = cath2)
+# summary(m5)
+# cal_auc(m5)
+# anova(m4,m5,test = "Chisq")
+# 
+m6 = gam(formula = cath1.MI~s(cath1.AGE_G)+cath1.RACE_G+cath1.HXSMOKE+cath1.CHFSEV+cath1.HXANGINA+cath1.HXCEREB+cath1.HXCHF+cath1.HXCOPD+cath1.HXDIAB+cath1.HXHTN+cath1.HXHYL+cath1.HXMI+s(cath1.LVEF_R)+cath1.NUMDZV+cath1.HXMI:cath1.HXANGINA+cath1.HXMI:cath1.RACE_G,family = binomial(link = "logit"),data = cath2)
+# summary(m6)
+# cal_auc(m6)
+# anova(m5,m6,test = "Chisq")
+# 
+m7 = gam(formula = cath1.MI~s(cath1.AGE_G)+cath1.RACE_G+cath1.HXSMOKE+cath1.CHFSEV+cath1.HXANGINA+cath1.HXCEREB+cath1.HXCHF+cath1.HXCOPD+cath1.HXDIAB+cath1.HXHTN+cath1.HXHYL+cath1.HXMI+s(cath1.LVEF_R)+cath1.NUMDZV+cath1.HXMI:cath1.HXANGINA+cath1.HXMI:cath1.RACE_G+cath1.NUMDZV:cath1.HXANGINA,family = binomial(link = "logit"),data = cath2)
+# summary(m7)
+# cal_auc(m7)
+# anova(m6,m7,test = "Chisq")
+# 
+m8 = gam(formula = cath1.MI~s(cath1.AGE_G)+cath1.RACE_G+cath1.HXSMOKE+cath1.CHFSEV+cath1.HXANGINA+cath1.HXCEREB+cath1.HXCHF+cath1.HXCOPD+cath1.HXDIAB+cath1.HXHTN+cath1.HXHYL+cath1.HXMI+s(cath1.LVEF_R)+cath1.NUMDZV+cath1.HXMI:cath1.HXANGINA+cath1.HXMI:cath1.RACE_G+cath1.NUMDZV:cath1.HXANGINA+cath1.HXCOPD:cath1.RACE_G,family = binomial(link = "logit"),data = cath2)
+# summary(m8)
+# cal_auc(m8)
+# anova(m7,m8,test = "Chisq")
+# 
+m9 = gam(formula = cath1.MI~s(cath1.AGE_G)+cath1.RACE_G+cath1.HXSMOKE+cath1.CHFSEV+cath1.HXANGINA+cath1.HXCEREB+cath1.HXCHF+cath1.HXCOPD+cath1.HXDIAB+cath1.HXHTN+cath1.HXHYL+cath1.HXMI+s(cath1.LVEF_R)+cath1.NUMDZV+cath1.HXMI:cath1.HXANGINA+cath1.HXMI:cath1.RACE_G+cath1.NUMDZV:cath1.HXANGINA+cath1.HXCOPD:cath1.RACE_G+cath1.HXSMOKE:cath1.RACE_G,family = binomial(link = "logit"),data = cath2)
+# summary(m9)
+# cal_auc(m9)
+# anova(m8,m9,test = "Chisq")
+# 
+m10 = gam(formula = cath1.MI~s(cath1.AGE_G)+cath1.RACE_G+cath1.HXSMOKE+cath1.CHFSEV+cath1.HXANGINA+cath1.HXCEREB+cath1.HXCHF+cath1.HXCOPD+cath1.HXDIAB+cath1.HXHTN+cath1.HXHYL+cath1.HXMI+s(cath1.LVEF_R)+cath1.NUMDZV+cath1.HXMI:cath1.HXANGINA+cath1.HXMI:cath1.RACE_G+cath1.NUMDZV:cath1.HXANGINA+cath1.HXCOPD:cath1.RACE_G+cath1.HXSMOKE:cath1.RACE_G+cath1.HXCEREB:cath1.NUMDZV,family = binomial(link = "logit"),data = cath2)
+# summary(m10)
+# cal_auc(m10)
+# anova(m9,m10,test = "Chisq")
+
+m11 = gam(formula = cath1.MI~s(cath1.AGE_G)+cath1.RACE_G+cath1.HXSMOKE+cath1.CHFSEV+cath1.HXANGINA+cath1.HXCEREB+cath1.HXCHF+cath1.HXCOPD+cath1.HXDIAB+cath1.HXHYL+cath1.HXMI+s(cath1.LVEF_R)+cath1.NUMDZV+cath1.HXMI:cath1.HXANGINA+cath1.HXMI:cath1.RACE_G+cath1.NUMDZV:cath1.HXANGINA+cath1.HXCOPD:cath1.RACE_G+cath1.HXSMOKE:cath1.RACE_G+cath1.HXCEREB:cath1.NUMDZV,family = binomial(link = "logit"),data = cath2)
+#summary(m11)
+#cal_auc(m11)
+#anova(m10,m11,test = "Chisq")
+
+
+# step(glm(formula = cath1.MI~cath1.AGE_G+cath1.RACE_G+cath1.HXSMOKE+cath1.CHFSEV+cath1.HXANGINA+cath1.HXCEREB+cath1.HXCHF+cath1.HXCOPD+cath1.HXDIAB+cath1.HXHTN+cath1.HXHYL+cath1.HXMI+cath1.LVEF_R+cath1.NUMDZV+cath1.HXMI:cath1.HXANGINA+cath1.HXMI:cath1.RACE_G+cath1.NUMDZV:cath1.HXANGINA+cath1.HXCOPD:cath1.RACE_G+cath1.HXSMOKE:cath1.RACE_G+cath1.HXCEREB:cath1.NUMDZV,family = binomial(link = "logit"),data = cath2))
+
+#step(m2)
+
+```
+
+
+```{r echo=FALSE, fig.cap="Comparing Linear Term and Smoothing Spline Fits",fig.width=4, fig.height=3}
+#par(mfrow=c(2,2),oma = c(4, 4, 0.2, 0.2))
+# par(mfrow = c(2,2),
+#           oma = c(5,4,0,0) + 0.1,
+#           mar = c(0,0,1,1) + 0.1)
+par(mfrow = c(2, 2),     
+    oma = c(2, 2, 0, 0), 
+    mar = c(1, 1, 0, 0), 
+    mgp = c(2, 1, 0),   
+    xpd = NA) 
+# plot(Effect("cath1.AGE_G",m2),band.colors="blue",lwd=3)
+# plot(Effect("cath1.LVEF_R",m2),band.colors="blue",lwd=3)
+plot(m4,col="red",ylab = '',xaxt = "n", xlab = '')
+termplot(m2,terms = "cath1.AGE_G",smooth = panel.smooth,se=TRUE,ylab = '')
+termplot(m2,terms = "cath1.LVEF_R",smooth = panel.smooth,se=TRUE,ylab = '',yaxt = "n")
+```
+
+Having added smoothness, I consider to include more interaction terms. According to the previous studies and personal knowledge, I select variables that may be not conditionally independent and include the interaction between two variables in my model. Examining the interaction term by conducting ANOVA test on nested models. If the p-value from ANOVA test is smaller than the critical value $\alpha$ (using $\alpha=0.1$), then the interaction term will be included in the updated baseline model. Attempting to include all the interation terms I consider are reasonable, I employ the step function to find my final model with using AIC as criterion. The detailed information about interaction terms is listed in the following table.
+
+```{r echo=FALSE, tab.cap="Evaluation on Model Post Interaction Term Adding"}
+Interaction = c("cath1.HXMI:cath1.HXANGINA","cath1.HXMI:cath1.RACE_G","cath1.NUMDZV:cath1.HXANGINA","cath1.HXCOPD:cath1.RACE_G","cath1.HXSMOKE:cath1.RACE_G","cath1.HXCEREB:cath1.NUMDZV")
+Residual_Deviance = c(m5$deviance,m6$deviance,m7$deviance,m8$deviance,m9$deviance,m10$deviance)
+AIC = c(m5$aic,m6$aic,m7$aic,m8$aic,m9$aic,m10$aic)
+Deviance = c(anova(m4,m5,test = "Chisq")$Deviance[2],anova(m5,m6,test = "Chisq")$Deviance[2],anova(m6,m7,test = "Chisq")$Deviance[2],anova(m7,m8,test = "Chisq")$Deviance[2],anova(m8,m9,test = "Chisq")$Deviance[2],anova(m9,m10,test = "Chisq")$Deviance[2])
+P_value = c(anova(m4,m5,test = "Chisq")$`Pr(>Chi)`[2],anova(m5,m6,test = "Chisq")$`Pr(>Chi)`[2],anova(m6,m7,test = "Chisq")$`Pr(>Chi)`[2],anova(m7,m8,test = "Chisq")$`Pr(>Chi)`[2],anova(m8,m9,test = "Chisq")$`Pr(>Chi)`[2],anova(m9,m10,test = "Chisq")$`Pr(>Chi)`[2])
+tt2 = data.frame(Interaction,Residual_Deviance,AIC,Deviance,P_value)
+kable(tt2)
+```
+
+
+Having considered transformation of variables, smoothness, interaction terms and redundant variables, I get my final model, which is shown as following:
+
+
+\begin{align*}
+logit(Pr(cath1.MI=1)) = \beta_0 + \beta_1s(cath1.AGE_G) + \beta_2(cath1.RACE_G=2) + \beta_3(cath1.RACE_G=3) + \\ \beta_4(cath1.HXSMOKE=1) + \beta_5(cath1.CHFSEV=1) + \beta_6(cath1.CHFSEV=2) + \\
+\beta_7(cath1.CHFSEV=3) + \beta_8(cath1.CHFSEV=4) + \beta_9(cath1.HXANGINA=1) + \\
+\beta_{10}(cath1.HXCEREB=1) + \beta_{11}(cath1.HXCHF=1) + \beta_{12}(cath1.HXCOPD=1) + \\
+\beta_{13}(cath1.HXDIAB=1) + \beta_{14}(cath1.HXHYL=1) + \beta_{15}(cath1.HXMI=1) + \\
+\beta_{16}s(cath1.LVEF_R) + \beta_{17}(cath1.NUMDZV=2) + \beta_{18}(cath1.NUMDZV=3) + \\ \beta_{19}(cath1.HXMI=1)(cath1.HXANGINA=1) +  \beta_{20}(cath1.HXMI=1)(cath1.RACE_G=2) + \\ \beta_{21}(cath1.HXMI=1)(cath1.RACE_G=3)  + \beta_{22}(cath1.NUMDZV=2)(cath1.HXANGINA=1) + \\ \beta_{23}(cath1.NUMDZV=3)(cath1.HXANGINA=1) + \beta_{24}(cath1.HXCOPD=1)(cath1.RACE_G=2) + \\ \beta_{25}(cath1.HXCOPD=1)(cath1.RACE_G=3) + \beta_{26}(cath1.HXSMOKE=1)(cath1.RACE_G=2) + \\ \beta_{27}(cath1.HXSMOKE=1)(cath1.RACE_G=3) + \beta_{28}(cath1.HXCEREB=1)(cath1.NUMDZV=2) + \\ \beta_{29}(cath1.HXCEREB=1)(cath1.NUMDZV=3)
+\end{align*}
+
+It is a generalized additive model, including one intercept $\beta_0$, 13 variables (2 with smoothness) and 6 interaction terms. Among all the variables, two are numeric variables and eleven are categorical variables, 8 with two levels, 2 with three levels and 1 with five levels. Thus, I have total 30 parameters in the final model. Since two of them have been added smoothness thus do not have accurate estimate, detailed information about rest 28 variables is listed below.
+
+```{r echo=FALSE, tab.cap="Point Estimate of Parameters in Final Model"}
+summary_m11 = summary(m11)
+Variable = names(summary_m11$p.coeff)
+Estimate = summary_m11$p.coeff
+Std_Error = summary_m11$se[1:28]
+CI_Lower = Estimate - qnorm(0.975)*Std_Error
+CI_upper = Estimate + qnorm(0.975)*Std_Error
+P_Value = summary_m11$p.pv
+tt3 = data.frame(Variable,Estimate,Std_Error,CI_Lower,CI_upper,P_Value)
+row.names(tt3)=NULL
+kable(tt3)
+```
+
+According to the p-value in above table, I find 4 variables' p-value is larger than the significance level ($\alpha$=0.1), which indicates these variables may be not statistically significant in my GAM model. However, all these four variables are included in interaction terms and those interaction terms have small p-value, thus they are kept in the model.
+
+The estimate of intercept is -2.17, which means the log odds of having subsequent MI is -2.17 when all the other variables are fixed to 0 or 0th level (reference level). However, it does not make sense having a 0 age for patients. Therefore there is no meaningful interpretation can be given for the intercept.
+
+The estimate on (Race=2) is -0.39, which means the odds ratio between African American (Race=2) and Caucasian (Race=1) is exp(-0.39) = 0.677 with the values of other predictors staying fixed. Thus, for an African American, the odds of having subsequent MI is 0.677 times larger than the odds for a Caucasian having the disease, which indicates the Caucasian is more fragile to MI when a Caucasian and an African American have similar characteristics and previous events.
+
+The coefficient estimate on interaction between prior MI and race is 0.24, thus comparing to Caucasian with medical history in experiencing MI, African American with prior MI has exp(-0.39+0.24) = 0.86 times larger odds of having subsequent MI. With knowing the estimate of prior MI, which is 0.51, I can find that for an African American with prior MI, the odds of having MI again is exp(-2.17-0.39+0.51+0.24) = 0.16 (Pr(MI=Yes|prior MI & African American) = 0.14) when all the other variables are fixed to 0 or 0th level (reference level).
+
+```{r echo=FALSE,tab.cap="Approximate Significance of Parameters with Smoothness"}
+kable(summary_m11$s.table)
+```
+
+The predictors with added smoothness do not have exact point estimate but the above table does show their statistical significance in this predictive model. Both predictors have extreme small p-value, which is approximately 0. 
+
+Having examined the relationship between predictors and outcome of MI, I will discuss whether this GAM model has a satisfied predictive power and whether there exists any further improvement on its predictive capability.
+
+####Model Diagnosis
+
+The predictive performance of my final model is evaluated by five criterion:
+
+* AUC: the value of AUC is the area under the ROC curve created by plotting the true positive rate (TPR) against the false positive rate (FPR), which is used to indicate accuracy of models. Since the DDCD dataset is really unbalanced, using AUC is better than using the accuracy directly since the model only predicts 0 can also have a higher accuracy but actually low predictive power. For my final model, AUC is around 0.62 that is a kind of satisfied value but further exploration on modifying the model is necessary.
+
+* AIC: Akaike information criterion (AIC) is an estimator of the relative quality of statistical models. I use AIC as criterion to select interaction terms and my current AIC is 18351 that is lower than all the other models I fitted before. Among all the models I fitted, the final model is the best one. 
+
+* Deviance: the deviance of this model is 18283. Although the value of deviance is still large, it is close to the deviance of saturated model indicating the final model has a relative satisfied predictive power.
+
+* GCV: the minimised generalised cross-validation (GCV) score of the GAM fitted. It can be used to estimate prediction error thus smaller values indicated better fitting models. GCV score is -0.18 in my final model. 
+
+* Pseudo Adjusted R2: It is only 0.02 for my final model, which requires further action.
+
+
+
+```{r include=FALSE}
+# cath = data.frame(matrix(NA,nrow = nrow(cath2), ncol = ncol(cath2)))
+# for (i in 1:nrow(cath2)){
+#   for (j in 1:ncol(cath2)){
+#     cath[i,j] = cath2 [i,j]
+#   }
+# }
+# colnames(cath) = colnames(cath2)
+# modcv = train(cath1.MI~cath1.AGE_G+cath1.RACE_G+cath1.HXSMOKE+cath1.CHFSEV+cath1.HXANGINA+cath1.HXCEREB+cath1.HXCHF+cath1.HXCOPD+cath1.HXDIAB+cath1.HXHYL+cath1.HXMI+cath1.LVEF_R+cath1.NUMDZV+cath1.HXMI:cath1.HXANGINA+cath1.HXMI:cath1.RACE_G+cath1.NUMDZV:cath1.HXANGINA+cath1.HXCOPD:cath1.RACE_G+cath1.HXSMOKE:cath1.RACE_G+cath1.HXCEREB:cath1.NUMDZV,method = "gamSpline", family = binomial(link = "logit"),data = cath, trControl = trainControl(method = "cv",number = 10, verboseIter = TRUE))
+
+AUC = cal_auc(m11)
+Deviance = m11$deviance
+Pseudo_R2 = summary_m11$r.sq
+AIC = m11$aic
+GCV = summary_m11$sp.criterion
+Performance = c(AUC,AIC,Deviance,GCV,Pseudo_R2)
+```
+
+```{r echo=FALSE,tab.cap = "Performance of Final Model Based On Four Criterion"}
+tt4 = data.frame(round(Performance,4),row.names = c("AUC","AIC","Deviance","GCV","Pseudo_R2"))
+colnames(tt4) = c("Performance")
+kable(tt4)
+```
+
+The most common way of diagnosing a predictive model is checking its residuals. For the final model, I have two type of residuals, one is Pearson residual and the other is Deviance residual. I find for both residuals, the residual values vary for different outcome of MI. For the patients without subsequent MI, the residuals tend to be small and negative; but for the patients with subsequent MI, the residuals tend to be larger and positive. This result indicates that my final model lacks capability on accurately predicting the occurance of events (outcome=having subsequent MI).
+
+
+```{r include=FALSE}
+#gam.check(m11,type = "deviance")
+
+r_p = residuals.gam(m11,type="pearson")
+r_d = residuals.gam(m11,type="deviance")
+ind = c(rep("pearson",length(r_p)),rep("deviance",length(r_d)))
+mi = c(cath2$cath1.MI,cath2$cath1.MI)
+residual = c(r_p,r_d)
+tt5 = data.frame(residual,ind,mi)
+```
+
+```{r echo=FALSE,warning=FALSE,message=FALSE, fig.cap="Histogram of Residuals with Different Outcome of MI",fig.width=6, fig.height=3}
+ggplot(data=tt5,aes(x=residual)) +
+  geom_histogram(data=subset(tt5,ind == 'pearson'),fill = "red", alpha = 0.5) +
+  geom_histogram(data=subset(tt5,ind == 'deviance'),fill = "black", alpha = 0.5) +
+  facet_wrap(~mi)
+```
+
+####Discussion
+
+The DDCD dataset is an unbalanced dataset with 19045 records for (outcome=no subsequent MI) and only 3321 records for (outcome=subsequent MI). Thus a good predictive model on this dataset should be able to deal with this imbalance. According to the residual plot, I consider my final model lacks of ability on accurately predicting the patients with subsequent MI. With a large amount of dataset outcome is 0, my model tends to predict more 0 than its actual value. For further action, I am considering to modify the model in order to make it better deal with unbalanced data.
+
+Since I employ generalized additive model, it is difficult to estimate the coefficients on terms with smoothness thus it is difficult to interpret the terms. I will further explore approaches to give an interpretation on terms with smoothness.
+
+Moreover, the pseudo R square is very low. According to the solution given by TA for homework 2, I consider grouped the data may help increase the value of R square. For further action, I will examine approaches to group the dataset and have a more reasonable R square.
+
+
+####Reference
+
+1. DukeCath Documentation for users Version 1.1: March 02, 2017
+
+2. Homework 2 Solution by Lu Wang
